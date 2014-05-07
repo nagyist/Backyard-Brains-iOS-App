@@ -8,7 +8,7 @@
 
 
 #import "BBFileViewControllerTBV.h"
-
+#import "MyAppDelegate.h"
 
 #define kSyncWaitTime 10 //seconds
 
@@ -119,7 +119,7 @@
     //create the status bar
     if (self.dbStatusBar==nil)
     {
-        self.dbStatusBar = [[UIButton alloc] initWithFrame:CGRectMake(self.theTableView.frame.origin.x, self.toolbar.frame.size.height, self.theTableView.frame.size.width, 0)];
+        self.dbStatusBar = [[[UIButton alloc] initWithFrame:CGRectMake(self.theTableView.frame.origin.x, self.toolbar.frame.size.height, self.theTableView.frame.size.width, 0)] autorelease];
         [self.dbStatusBar setBackgroundColor:[UIColor colorWithRed:0 green:0 blue:1 alpha:0.5]];
         [self.dbStatusBar setAutoresizingMask:UIViewAutoresizingFlexibleWidth];
         //[self.dbStatusBar setTitle:@"bar" forState:UIControlStateNormal];
@@ -180,10 +180,77 @@
     [self populateSelectedArray];
 	
 	[theTableView reloadData];
-
+    
+    //react on new file, we have to refresh table and display file
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(newFileAddedViaShare)
+                                                 name:@"FileReceivedViaShare"
+                                               object:nil];
+    
+    //check if we should open new share file
+    MyAppDelegate * appDelegate = (MyAppDelegate*)[[UIApplication sharedApplication] delegate];
+    if([appDelegate sharedFileShouldBeOpened])
+    {
+        if ([self.allFiles count] > 0)
+        {
+            NSIndexPath* ipath = [NSIndexPath indexPathForRow: [self.allFiles count]-1 inSection: 0];
+            [theTableView scrollToRowAtIndexPath: ipath atScrollPosition: UITableViewScrollPositionTop animated: YES];
+            [self openActionViewWithFile:[self.allFiles objectAtIndex:[self.allFiles count]-1]];
+        }
+        [appDelegate sharedFileIsOpened];
+    }
 }
 
 
+-(void) openActionViewWithFile:(BBFile *) file
+{
+    // Create the action view controller, load it with the delegate, and push it up onto the stack.
+    NSMutableArray *theFiles = [[NSMutableArray alloc] initWithObjects:file,nil];
+    
+    self.filesSelectedForAction = (NSArray *)theFiles;
+    [theFiles release];
+    
+    BBFileActionViewControllerTBV *actionViewController = [[BBFileActionViewControllerTBV alloc] init];
+    actionViewController.delegate = self;
+    
+    
+    [self.navigationController pushViewController:actionViewController animated:YES];
+    [actionViewController release];
+}
+
+
+//Refresh table to display new shared file
+-(void) newFileAddedViaShare
+{
+    MyAppDelegate * appDelegate = (MyAppDelegate*)[[UIApplication sharedApplication] delegate];
+    if([appDelegate sharedFileShouldBeOpened])
+    {
+        self.allFiles = [NSMutableArray arrayWithArray:[BBFile allObjects]];
+        self.contentSizeForViewInPopover =
+        CGSizeMake(310.0, (self.tableView.rowHeight * ([self.allFiles count] +1)));
+        self.inPseudoEditMode = NO;
+        [self populateSelectedArray];
+        [theTableView reloadData];
+        //scroll to bottom
+       
+        
+        if ([self.allFiles count] > 0)
+        {
+            NSIndexPath* ipath = [NSIndexPath indexPathForRow: [self.allFiles count]-1 inSection: 0];
+            [theTableView scrollToRowAtIndexPath: ipath atScrollPosition: UITableViewScrollPositionTop animated: YES];
+            [self openActionViewWithFile:[self.allFiles objectAtIndex:[self.allFiles count]-1]];
+        }
+        MyAppDelegate * appDelegate = (MyAppDelegate*)[[UIApplication sharedApplication] delegate];
+        [appDelegate sharedFileIsOpened];
+    }
+}
+
+-(void) viewWillDisappear:(BOOL)animated
+{
+
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"FileReceivedViaShare" object:nil];
+    [super viewWillDisappear:animated];
+}
 
 #pragma mark - Rotation support
 
@@ -311,7 +378,9 @@
     
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
     
-    [self cellActionTriggeredFrom:(BBFileTableCell *)[tableView cellForRowAtIndexPath:indexPath]];
+    BBFileTableCell * cell = (BBFileTableCell *)[self.theTableView cellForRowAtIndexPath:indexPath];
+    
+    [self cellActionTriggeredFrom:cell];
     
 }
 
@@ -652,7 +721,6 @@
     //for each path
     for (int l = 0; l < [newPaths count]; ++l)
     {
-        BOOL match = FALSE;
         //for each file
         for (int m = 0; m < [self.allFiles count]; ++m)
         {

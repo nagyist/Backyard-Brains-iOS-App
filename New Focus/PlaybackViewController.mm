@@ -12,6 +12,7 @@
     dispatch_source_t callbackTimer;
     BBFile *aFile;
     BBAudioManager *bbAudioManager;
+    BOOL audioPaused;
 }
 
 - (void)togglePlayback;
@@ -43,7 +44,7 @@
         
         
         // And finally, start up the audio file again, and seek to where we were.
-        [bbAudioManager startPlaying:[bbfile fileURL]]; // startPlaying: initializes the file and buffers audio
+        [bbAudioManager startPlaying:bbfile]; // startPlaying: initializes the file and buffers audio
         bbAudioManager.currentFileTime = timeToSeekTo;
         
     }
@@ -66,13 +67,17 @@
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    [self.navigationController setNavigationBarHidden:YES animated:YES];
+    [[BBAudioManager bbAudioManager] clearWaveform];
     [glView startAnimation];
+
+    audioPaused = NO;
 }
 
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
-    
+
     // Make sure that we're playing out of the right audioroute, and if it changes
     // (e.g., if you unplug the headphones while playing), it just works
     [self ifNoHeadphonesConfigureAudioToPlayOutOfSpeakers];
@@ -81,9 +86,10 @@
     
     // Grab the audio file, and start buffering audio from it.
     bbAudioManager = [BBAudioManager bbAudioManager];
+    [[BBAudioManager bbAudioManager] clearWaveform];
     NSURL *theURL = [bbfile fileURL];
     NSLog(@"Playing a file at: %@", theURL);
-    [bbAudioManager startPlaying:theURL]; // startPlaying: initializes the file and buffers audio
+    [bbAudioManager startPlaying:bbfile]; // startPlaying: initializes the file and buffers audio
     
     // Set the slider to have the bounds of the audio file's duraiton
     timeSlider.minimumValue = 0;
@@ -110,9 +116,11 @@
 
 - (void)viewWillDisappear:(BOOL)animated
 {
-    
+
     [super viewWillDisappear:animated];
-    
+    [self.navigationController setNavigationBarHidden:NO animated:YES];
+    [glView saveSettings:FALSE]; // save non-threshold settings
+    [glView stopAnimation];
     dispatch_suspend(callbackTimer);
     [[BBAudioManager bbAudioManager] stopPlaying];
     [[Novocaine audioManager] removeObserver:self forKeyPath:@"numOutputChannels"];
@@ -125,7 +133,13 @@
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    
+    self.timeSlider.continuous = YES;
+    [self.timeSlider addTarget:self
+                  action:@selector(sliderTouchUpInside:)
+        forControlEvents:(UIControlEventTouchUpInside)];
+    [self.timeSlider addTarget:self
+                        action:@selector(sliderTouchDown:)
+              forControlEvents:(UIControlEventTouchDown)];
     // our CCGLTouchView being added as a subview
 	MyCinderGLView *aView = [[MyCinderGLView alloc] init];
 	glView = aView;
@@ -166,29 +180,44 @@
     [super dealloc];
 }
 
-- (IBAction)sliderValueChanged:(id)sender {
-    
-    if (bbAudioManager.playing) {
-        [bbAudioManager pausePlaying];
-        bbAudioManager.currentFileTime = (float)self.timeSlider.value;
+
+//
+// Called when user stop dragging scruber
+//
+- (void)sliderTouchUpInside:(NSNotification *)notification {
+    if(!audioPaused)
+    {
+        [bbAudioManager setSeeking:NO];
         [bbAudioManager resumePlaying];
     }
-    else {
-        bbAudioManager.currentFileTime = (float)self.timeSlider.value;
-    }
-    return;
+}
+
+//
+// Called when user start dragging scruber
+//
+- (void)sliderTouchDown:(NSNotification *)notification {
+    [bbAudioManager setSeeking:YES];
+    [bbAudioManager pausePlaying];
+    audioPaused = YES;
+}
+
+//Seek to new place in file
+- (IBAction)sliderValueChanged:(id)sender {
     
+    bbAudioManager.currentFileTime = (float)self.timeSlider.value;
 }
 
 - (IBAction)playPauseButtonPressed:(id)sender
 {
     [self togglePlayback];
+    audioPaused = !audioPaused;
 }
 
 - (void)togglePlayback
 {
 
     if (bbAudioManager.playing == false) {
+        
         [bbAudioManager resumePlaying];
     }
     else {

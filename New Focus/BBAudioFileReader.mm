@@ -119,9 +119,9 @@ static pthread_mutex_t threadLock;
     
 }
 
-- (void)retrieveFreshAudio:(float *)buffer numFrames:(UInt32)thisNumFrames numChannels:(UInt32)thisNumChannels
+- (float)retrieveFreshAudio:(float *)buffer numFrames:(UInt32)thisNumFrames numChannels:(UInt32)thisNumChannels
 {
-//    dispatch_sync(dispatch_get_main_queue(), ^{
+ //   dispatch_sync(dispatch_get_main_queue(), ^{
     
         AudioBufferList incomingAudio;
         incomingAudio.mNumberBuffers = 1;
@@ -133,17 +133,26 @@ static pthread_mutex_t threadLock;
         SInt64 frameOffset = 0;
         ExtAudioFileTell(self.inputFile, &frameOffset);
         self.currentFileTime = (float)frameOffset / self.samplingRate;
-        
+    
         // Read the audio
         UInt32 framesRead = thisNumFrames;
         ExtAudioFileRead(self.inputFile, &framesRead, &incomingAudio);
 
-        
-        
+
+    
         if (framesRead == 0)
             self.fileIsDone = true;
+        return (float)frameOffset / self.samplingRate;
 //    });
 }
+
+- (void)retrieveFreshAudio:(float *)buffer numFrames:(UInt32)thisNumFrames numChannels:(UInt32)thisNumChannels seek:(UInt32) position
+{
+    ExtAudioFileSeek(self.inputFile, position);
+    [self retrieveFreshAudio:buffer numFrames:thisNumFrames numChannels:thisNumChannels];
+}
+
+
 
 
 

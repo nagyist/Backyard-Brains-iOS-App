@@ -60,10 +60,12 @@
             time.text =  [NSString stringWithFormat:@"%ds", seconds];		
         }
 
-        time.textAlignment = UITextAlignmentRight;
+        time.textAlignment = NSTextAlignmentRight;
         time.font = [UIFont fontWithName:@"Helvetica" size:16];
         [cell addSubview:time];
         [time release];
+        
+
         
     };
     
@@ -82,7 +84,8 @@
     
     [self.tableViewModel addSection:filesSection];
     
-    // File Definition 
+
+    // File Definition
     // ========================================
     
     // File Definition

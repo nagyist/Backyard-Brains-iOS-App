@@ -7,17 +7,18 @@
 //
 
 #import "MyCinderGLView.h"
-
+#import "BBSpike.h"
 @interface MyCinderGLView ()
 {
     BBAudioManager *audioManager;
     float destNumSecondsVisible; // used for short animations of scaling the plot
     float touchStartTime;
+    BOOL weAreDrawingSelection;
+    float timeForSincDrawing;
 }
 
 - (Vec2f)calculateTouchDistanceChange:(std::vector<ci::app::TouchEvent::Touch>)touches;
 - (void)fillDisplayVector;
-- (void)drawScaleText;
 - (void)drawGrid;
 
 @end
@@ -134,15 +135,72 @@
     mCam.setOrtho(-numSecondsVisible, -numSecondsMin, -numVoltsVisible/2.0f, numVoltsVisible/2.0f, 1, 100);;
     gl::setMatrices( mCam );
     
+    // Draw selection area
+    std::stringstream timeStream;
+    std::stringstream rmstream;
+    weAreDrawingSelection = [[BBAudioManager bbAudioManager] selecting] &&  [[BBAudioManager bbAudioManager] selectionStartTime] != [[BBAudioManager bbAudioManager] selectionEndTime] && ![[BBAudioManager bbAudioManager] playing] && ![[BBAudioManager bbAudioManager] viewAndRecordFunctionalityActive];
+    if(weAreDrawingSelection)
+    {
+        glLineWidth(1.0f);
+        
+        float sStartTime;
+        float sEndTime;
+        //Order time points in right way
+        if([[BBAudioManager bbAudioManager] selectionStartTime]>[[BBAudioManager bbAudioManager] selectionEndTime])
+        {
+            sStartTime = [[BBAudioManager bbAudioManager] selectionEndTime];
+            sEndTime = [[BBAudioManager bbAudioManager] selectionStartTime];
+        }
+        else
+        {
+            sStartTime = [[BBAudioManager bbAudioManager] selectionStartTime];
+            sEndTime = [[BBAudioManager bbAudioManager] selectionEndTime];
+        }
+        
+        //Calculate time
+        float timeToDisplay = 1000.0*(sEndTime - sStartTime);
+        
+        timeStream.precision(1);
+        if (timeToDisplay >= 1000) {
+            timeToDisplay /= 1000.0;
+            timeStream << fixed << timeToDisplay << " s";
+        }
+        else {
+            timeStream << fixed << timeToDisplay << " msec";
+        }
+        
+        //Get RMS string
+        float rmsToDisplay = [[BBAudioManager bbAudioManager] rmsOfSelection];
+        
+        rmstream.precision(3);
+        rmstream <<"RMS: "<< fixed << rmsToDisplay << " mV";
+        
+        
+        //draw background of selected region
+        glColor4f(0.4, 0.4, 0.4, 0.5);
+        gl::disableDepthRead();
+        gl::drawSolidRect(Rectf(sStartTime, -numVoltsVisible, sEndTime, numVoltsVisible),false);
+        
+        //draw limit lines
+        glColor4f(0.8, 0.8, 0.8, 1.0);
+        gl::drawLine(Vec2f(sStartTime, -numVoltsVisible), Vec2f(sStartTime, numVoltsVisible));
+        gl::drawLine(Vec2f(sEndTime, -numVoltsVisible), Vec2f(sEndTime, numVoltsVisible));
+        gl::enableDepthRead();
+    }
+
+    
     // Set the line color and width
     glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
     glLineWidth(1.0f);
-
+    
     // Put the audio on the screen
+
     [self fillDisplayVector];
     gl::draw(displayVector);
+    //draw spikes on the screen
+    [self drawSpikes];
 
-    
+
     // Draw a threshold line, if we're thresholding
     if ([[BBAudioManager bbAudioManager] thresholding]) {
         glColor4f(1.0, 0.0, 0.0, 1.0);
@@ -153,15 +211,100 @@
         gl::drawLine(Vec2f(-numSecondsVisible, threshval), Vec2f(-numSecondsMin, threshval));
     }
     
+    
     // Put a little grid on the screen.
     [self drawGrid];
     
     // Draw some text on that screen
-    [self drawScaleText];
+    [self drawScaleTextAndSelected:&timeStream andRms:&rmstream];
+    
+
     
 }
 
-- (void)drawScaleText
+//
+// Draw spikes of all spike trains
+//
+-(void) drawSpikes
+{
+    gl::enableDepthRead();
+    //we use timestamp (timeForSincDrawing) that is taken from audio manager "at the same time"
+    //when we took data from circular buffer to display waveform. It is important for sinc of waveform and spike marks
+    float currentTime = timeForSincDrawing ;
+    
+    //If we are not playing (we are scrubbing) than take time stamp directly from audio manager
+    if(![[BBAudioManager bbAudioManager] playing])
+    {
+        currentTime = [[BBAudioManager bbAudioManager] getTimeForSpikes];
+    }
+
+    NSMutableArray* spikes;
+    if((spikes = [[BBAudioManager bbAudioManager] getSpikes])!=nil)
+    {
+        Vec2f refSizeS = [self worldToScreen:Vec2f(-numSecondsMin,0.0)];
+        Vec2f refSizeW = [self screenToWorld:Vec2f(refSizeS.x-10,refSizeS.y+10)];
+        float tenPixX =refSizeW.x+numSecondsMin;
+        float tenPixY =refSizeW.y;
+        //Draw spikes
+        glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
+        BOOL weAreInInterval = NO;
+        float sizeOfPointX = 0.3*tenPixX;
+        float sizeOfPointY = 0.3*tenPixY;
+
+        
+        float startTimeToDisplay = currentTime-((numSecondsVisible> numSecondsMax)?numSecondsMax:numSecondsVisible);
+        float endTimeToDisplay = currentTime;
+        BBSpike * tempSpike;
+        NSMutableArray * tempSpikeTrain;
+        int i=0;
+        //go through all spike trains
+        for(tempSpikeTrain in spikes)
+        {
+            weAreInInterval = NO;
+            [self setColorWithIndex:i transparency:1.0f];
+            i++;
+            //go through all spikes
+            for (tempSpike in tempSpikeTrain) {
+                if([tempSpike time]>startTimeToDisplay && [tempSpike time]<endTimeToDisplay)
+                {
+                    weAreInInterval = YES;//we are in visible interval
+                    gl::drawSolidRect(Rectf([tempSpike time]-sizeOfPointX-endTimeToDisplay,[tempSpike value]-sizeOfPointY,[tempSpike time]+sizeOfPointX-endTimeToDisplay,[tempSpike value]+sizeOfPointY));
+                }
+                else if(weAreInInterval)
+                {//if we pass last spike in visible interval
+                    break;
+                }
+            }
+        }
+    }
+}
+
+//Change color of spike marks according to index
+-(void) setColorWithIndex:(int) iindex transparency:(float) transp
+{
+    iindex = iindex%5;
+    switch (iindex) {
+        case 0:
+            glColor4f(1.0f, 0.0f, 0.0f, transp);
+            break;
+        case 1:
+            glColor4f(0.0f, 0.0f, 1.0f, transp);
+            break;
+        case 2:
+            glColor4f(0.0f, 1.0f, 1.0f, transp);
+            break;
+        case 3:
+            glColor4f(1.0f, 1.0f, 0.0f, transp);
+            break;
+        case 4:
+            glColor4f(1.0f, 0.0f, 1.0f, transp);
+            break;
+    }
+    
+}
+
+
+- (void)drawScaleTextAndSelected:(std::stringstream *) timeStream andRms:(std::stringstream *) rmsStream
 {
     gl::disableDepthRead();
     gl::setMatricesWindow( Vec2i(self.frame.size.width, self.frame.size.height) );
@@ -177,6 +320,13 @@
     
     float xScale = 1000.0*(xMiddle.x - xFarLeft.x);
     float yScale = yScaleWorldPosition.y;
+    if([[UIScreen mainScreen] respondsToSelector:@selector(scale)] && [[UIScreen mainScreen] scale]==2.0)
+    {//if it is retina correct scale
+        //TODO: This should be tested with calibration voltage source
+        xScale *= 2.0f;
+        yScale /=2.0f;
+    }
+    
     
     // Figure out what we want to say
     std::ostringstream yStringStream;
@@ -191,24 +341,95 @@
     else {
         xStringStream << fixed << xScale << " msec";
     }
-    
-    
-    // Now that we have the string, calculate the position of the x-scale text
-    // (we'll be horizontally centering by hand)
-    Vec2f xScaleTextSize = mScaleFont->measureString(xStringStream.str());
-    Vec2f xScaleTextPosition = Vec2f(0.,0.);
-    xScaleTextPosition.x = (self.frame.size.width - xScaleTextSize.x)/2.0;
-    xScaleTextPosition.y =0.95*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
-    
+
 	gl::color( ColorA( 1.0, 1.0f, 1.0f, 1.0f ) );
     
     
     // Draw the y-axis scale text
+    
     mScaleFont->drawString(yStringStream.str(), yScaleTextPosition);
     
-    // Draw the x-axis scale text
-    mScaleFont->drawString(xStringStream.str(), xScaleTextPosition);
     
+    // Draw the x-axis scale text
+    if (weAreDrawingSelection) {
+
+        //Draw time ---------------------------------------------
+        
+        //if we are measuring draw measure result at the bottom
+        Vec2f xScaleTextSize = mScaleFont->measureString(timeStream->str());
+        Vec2f xScaleTextPosition = Vec2f(0.,0.);
+        xScaleTextPosition.x = (self.frame.size.width - xScaleTextSize.x)/2.0;
+        //if it is iPad put somewhat higher
+
+
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+            xScaleTextPosition.y =0.85*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
+        }
+        else
+        {
+            xScaleTextPosition.y =0.923*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
+        }
+        glColor4f(0.0, 0.0, 1.0, 1.0);
+        float centerx = self.frame.size.width/2;
+        
+        //draw background rectangle
+        gl::enableDepthRead();
+         gl::drawSolidRect(Rectf(centerx-3*xScaleTextSize.y,xScaleTextPosition.y-1.1*xScaleTextSize.y,centerx+3*xScaleTextSize.y,xScaleTextPosition.y+0.4*xScaleTextSize.y));
+        gl::disableDepthRead();
+        gl::color( ColorA( 1.0, 1.0f, 1.0f, 1.0f ) );
+        //draw text
+        mScaleFont->drawString(timeStream->str(), xScaleTextPosition);
+        
+        
+        //Draw RMS -------------------------------------------------
+        float xpositionOfCenterOfRMSBackground;
+
+        Vec2f rmsTextSize = mScaleFont->measureString(rmsStream->str());
+        xpositionOfCenterOfRMSBackground = self.frame.size.width-4.25*rmsTextSize.y;
+        Vec2f rmsTextPosition = Vec2f(0.,0.);
+        rmsTextPosition.x = (xpositionOfCenterOfRMSBackground - 0.5*rmsTextSize.x);
+        //if it is iPad put it on the right
+                UIInterfaceOrientation interfaceOrientation = [[UIApplication sharedApplication] statusBarOrientation];
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad || UIInterfaceOrientationIsLandscape(interfaceOrientation)) {
+            rmsTextPosition.y =xScaleTextPosition.y;
+        }
+        else
+        {
+           rmsTextPosition.y =0.23*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
+        }
+        glColor4f(0.0, 0.0, 0.0, 1.0);
+
+        
+        //draw background rectangle
+        gl::enableDepthRead();
+        gl::drawSolidRect(Rectf(self.frame.size.width-8*rmsTextSize.y,rmsTextPosition.y-1.1*rmsTextSize.y,self.frame.size.width-0.5*rmsTextSize.y,rmsTextPosition.y+0.4*rmsTextSize.y));
+        gl::disableDepthRead();
+        gl::color( ColorA( 0.0, 1.0f, 0.0f, 1.0f ) );
+        //draw text
+        mScaleFont->drawString(rmsStream->str(), rmsTextPosition);
+        
+        
+        
+    }
+    else
+    {
+        //If we are not measuring draw x-scale text
+        // Now that we have the string, calculate the position of the x-scale text
+        // (we'll be horizontally centering by hand)
+        Vec2f xScaleTextSize = mScaleFont->measureString(xStringStream.str());
+        Vec2f xScaleTextPosition = Vec2f(0.,0.);
+        xScaleTextPosition.x = (self.frame.size.width - xScaleTextSize.x)/2.0;
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+            
+            xScaleTextPosition.y =0.88*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
+        }
+        else
+        {
+            xScaleTextPosition.y =0.95*self.frame.size.height + (mScaleFont->getAscent() / 2.0f);
+        }
+        mScaleFont->drawString(xStringStream.str(), xScaleTextPosition);
+ 
+    }
     gl::enableDepthRead();
     
 }
@@ -216,20 +437,22 @@
 
 - (void)drawGrid
 {
-    
+    //draw line for x-axis
     float left, top, right, bottom, near, far;
     mCam.getFrustum(&left, &top, &right, &bottom, &near, &far);
     float height = top - bottom;
     float width = right - left;
     float middleX = (right - left)/2.0f + left;
-    float lineLength = 0.5*width;
-    float lineY = height*0.1 + bottom;
-    Vec2f leftPoint = Vec2f(middleX - lineLength / 2.0f, lineY);
-    Vec2f rightPoint = Vec2f(middleX + lineLength / 2.0f, lineY);
-    glColor4f(0.8, 0.8, 0.8, 1.0);
-    glLineWidth(1.0f);
-    gl::drawLine(leftPoint, rightPoint);
-
+    //draw line for x-axis if we are not displaying time interval measure
+    if (!weAreDrawingSelection) {
+        float lineLength = 0.5*width;
+        float lineY = height*0.1 + bottom;
+        Vec2f leftPoint = Vec2f(middleX - lineLength / 2.0f, lineY);
+        Vec2f rightPoint = Vec2f(middleX + lineLength / 2.0f, lineY);
+        glColor4f(0.8, 0.8, 0.8, 1.0);
+        glLineWidth(1.0f);
+        gl::drawLine(leftPoint, rightPoint);
+    }
 }
 
 
@@ -247,7 +470,7 @@
         offset = 0;
         
         if ([self getActiveTouches].size() != 2)
-            numSecondsVisible += 0.6 * (numSecondsMax - numSecondsVisible);
+            numSecondsVisible += 0.6 * (numSecondsMax - numSecondsVisible);//animation to max seconds
     }
     
     // See if we're asking for TOO FEW points
@@ -257,23 +480,25 @@
         offset = 0;
         
         if ([self getActiveTouches].size() != 2)
-            numSecondsVisible += 0.6 * (numSecondsMin*2.0 - numSecondsVisible);
+            numSecondsVisible += 0.6 * (numSecondsMin*2.0 - numSecondsVisible);//animation to min sec
         
     }
     
     // If we haven't set off any of the alarms above,
     // then we're asking for a normal range of points.
     else {
-        numPoints = numSecondsVisible * audioManager.samplingRate;
-        offset = numSecondsMax * audioManager.samplingRate - numPoints;
+        numPoints = numSecondsVisible * audioManager.samplingRate;//visible part
+        offset = numSecondsMax * audioManager.samplingRate - numPoints;//nonvisible part
         if ([[BBAudioManager bbAudioManager] thresholding]) {
             offset -= (numSecondsMin * audioManager.samplingRate)/2.0f;
         }
     }
     
     // Aight, now that we've got our ranges correct, let's ask for the audio.
-    [audioManager fetchAudio:(float *)&(displayVector.getPoints()[offset])+1 numFrames:numPoints whichChannel:0 stride:2];
-
+    //Only fetch visible part (numPoints samples) and put it after offset.
+    //Stride is equal to 2 since we have x and y coordinatesand we want to set only y
+    timeForSincDrawing =  [audioManager fetchAudio:(float *)&(displayVector.getPoints()[offset])+1 numFrames:numPoints whichChannel:0 stride:2];
+    //timeForSincDrawing is used to sinc displaying of waveform and spike marks
 }
 
 
@@ -348,10 +573,14 @@
     }
     
     // Touching to change the threshold value, if we're thresholding
+    //Selecting time interval and thresholding are mutualy exclusive
     else if (touches.size() == 1)
     {
+        BOOL changingThreshold;
+        changingThreshold = false;
         
-        if ([[BBAudioManager bbAudioManager] thresholding]) {
+        //thresholding
+        if ([[BBAudioManager bbAudioManager] thresholding] && ![[BBAudioManager bbAudioManager] selecting]) {
             Vec2f touchPos = touches[0].getPos();
             float currentThreshold = [[BBAudioManager bbAudioManager] threshold];
             
@@ -362,13 +591,43 @@
             float distance = abs(touchPos.y - screenThresholdPos.y);
             if (distance < 20) // set via experimentation
             {
+                changingThreshold = true;
                 [[BBAudioManager bbAudioManager] setThreshold:worldTouchPos.y];
             }
-
+        }
+        
+        //selecting time interval
+        if(!changingThreshold && ![[BBAudioManager bbAudioManager] playing] && ![[BBAudioManager bbAudioManager] viewAndRecordFunctionalityActive])
+        {
+            Vec2f touchPos = touches[0].getPos();
+            
+            // Convert into time coordinate
+            Vec2f worldTouchPos = [self screenToWorld:touchPos];
+            [[BBAudioManager bbAudioManager] updateSelection:worldTouchPos.x];
         }
         
     }
 
+}
+
+
+- (void)touchesBegan:(NSSet*)touches withEvent:(UIEvent*)event
+{
+    //if touch begins remove old time interval selection
+    [[BBAudioManager bbAudioManager] endSelection];
+    [super touchesBegan:touches withEvent:event];
+    
+}
+
+- (void)touchesEnded:(NSSet*)touches withEvent:(UIEvent*)event
+{
+    //if user just tapped on screen start and end point will
+    //be the same so we will remove time interval selection
+    if([[BBAudioManager bbAudioManager] selectionStartTime] == [[BBAudioManager bbAudioManager] selectionEndTime])
+    {
+        [[BBAudioManager bbAudioManager] endSelection];
+    }
+    [super touchesEnded:touches withEvent:event];
 }
 
 
@@ -378,7 +637,12 @@
 
     float windowHeight = self.frame.size.height;
     float windowWidth = self.frame.size.width;
-    
+    if([[UIScreen mainScreen] respondsToSelector:@selector(scale)] && [[UIScreen mainScreen] scale]==2.0)
+    {
+        //if it is retina
+        windowHeight += windowHeight;
+        windowWidth += windowWidth;
+    }
 
     float worldLeft, worldTop, worldRight, worldBottom, worldNear, worldFar;
     mCam.getFrustum(&worldLeft, &worldTop, &worldRight, &worldBottom, &worldNear, &worldFar);
@@ -405,6 +669,12 @@
     float windowHeight = self.frame.size.height;
     float windowWidth = self.frame.size.width;
 
+    if([[UIScreen mainScreen] respondsToSelector:@selector(scale)] && [[UIScreen mainScreen] scale]==2.0)
+    {
+        //if it is retina
+        windowHeight += windowHeight;
+        windowWidth += windowWidth;
+    }
     
     float worldLeft, worldTop, worldRight, worldBottom, worldNear, worldFar;
     mCam.getFrustum(&worldLeft, &worldTop, &worldRight, &worldBottom, &worldNear, &worldFar);
